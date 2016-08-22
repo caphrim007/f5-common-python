@@ -12,4 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-__version__ = '1.3.1'
+
+from f5.utils.util_exceptions import UtilError
+
+import pytest
+
+
+def test_util_error():
+    with pytest.raises(UtilError) as err:
+        raise UtilError
+    assert isinstance(err.value, UtilError)

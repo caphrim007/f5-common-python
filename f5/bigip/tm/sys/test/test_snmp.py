@@ -12,4 +12,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-__version__ = '1.3.1'
+
+import mock
+import pytest
+
+from f5.bigip.mixins import UnsupportedMethod
+from f5.bigip.tm.sys.snmp import Snmp
+
+
+@pytest.fixture
+def FakeSnmp():
+    fake_sys = mock.MagicMock()
+    return Snmp(fake_sys)
+
+
+def test_create_raises(FakeSnmp):
+    with pytest.raises(UnsupportedMethod) as EIO:
+        FakeSnmp.create()
+    assert EIO.value.message == "Snmp does not support the create method"
+
+
+def test_delete_raises(FakeSnmp):
+    with pytest.raises(UnsupportedMethod) as EIO:
+        FakeSnmp.delete()
+    assert EIO.value.message == "Snmp does not support the delete method"
