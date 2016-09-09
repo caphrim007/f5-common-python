@@ -42,8 +42,9 @@ def gen_csr(key, **name):
     return req
 
 
-def gen_cert(req, (ca_cert, ca_key), serial):
+def gen_cert(req, ca_files, serial):
     # returns the signed certificate in an X509 object
+    ca_cert, ca_key = ca_files
     cert = crypto.X509()
     cert.set_serial_number(serial)
     cert.gmtime_adj_notBefore(0)
@@ -69,9 +70,57 @@ def create_sslfiles():
     return key, csr, cert
 
 
-def setup_ifile_test(request, mgmt_root, name, sourcepath):
+def setup_datagroup_test(request, mgmt_root, name, sourcepath, **kwargs):
+    dg1 = mgmt_root.tm.sys.file.data_groups.data_group.create(
+        name=name, type='string', sourcePath=sourcepath, **kwargs)
+
+    def teardown():
+        # Remove the external dg.
+        try:
+            dg1.delete()
+        except HTTPError as err:
+            if err.response.status_code != 404:
+                raise
+    request.addfinalizer(teardown)
+
+    return dg1
+
+
+def test_CURDL_datagroup(request, mgmt_root):
+    # Create
+    ntf = NamedTemporaryFile(delete=False)
+    ntf_basename = os.path.basename(ntf.name)
+    ntf.write('"name1" := "value1",')
+    ntf.seek(0)
+    # Upload the file
+    mgmt_root.shared.file_transfer.uploads.upload_file(ntf.name)
+    tpath_name = 'file:/var/config/rest/downloads/{0}'.format(ntf_basename)
+    dg1 = setup_datagroup_test(request, mgmt_root, ntf_basename, tpath_name,
+                               )
+    assert dg1.name == ntf_basename
+
+    # Load Object
+    dg2 = mgmt_root.tm.sys.file.data_groups.data_group.load(name=ntf_basename)
+    assert dg1.name == dg2.name
+
+    # Rewrite the contents and update the object
+    ntf.write('"name2" := "value2",')
+    ntf.seek(0)
+    mgmt_root.shared.file_transfer.uploads.upload_file(ntf.name)
+
+    dg3 = mgmt_root.tm.sys.file.data_groups.data_group.load(name=ntf_basename)
+    dg3.update(sourcePath=tpath_name)
+    assert dg1.revision != dg3.revision
+
+    # Refresh dg2 and make sure revision matches dg3
+    dg2.refresh()
+    assert dg2.revision == dg3.revision
+
+
+def setup_ifile_test(request, mgmt_root, name, sourcepath, **kwargs):
     if1 = mgmt_root.tm.sys.file.ifiles.ifile.create(name=name,
-                                                    sourcePath=sourcepath)
+                                                    sourcePath=sourcepath,
+                                                    **kwargs)
 
     def teardown():
         # Remove the ifile.
@@ -87,7 +136,7 @@ def setup_ifile_test(request, mgmt_root, name, sourcepath):
 
 def test_CURDL_ifile(request, mgmt_root):
     # Create
-    ntf = NamedTemporaryFile()
+    ntf = NamedTemporaryFile(delete=False)
     ntf_basename = os.path.basename(ntf.name)
     ntf.write('this is a test file')
     ntf.seek(0)
@@ -95,7 +144,8 @@ def test_CURDL_ifile(request, mgmt_root):
     mgmt_root.shared.file_transfer.uploads.upload_file(ntf.name)
 
     tpath_name = 'file:/var/config/rest/downloads/{0}'.format(ntf_basename)
-    if1 = setup_ifile_test(request, mgmt_root, ntf_basename, tpath_name)
+    if1 = setup_ifile_test(request, mgmt_root, ntf_basename, tpath_name,
+                           )
     assert if1.name == ntf_basename
 
     # Load Object
@@ -169,7 +219,7 @@ def setup_sslcrt_test(request, mgmt_root, name, sourcepath):
 def test_CURDL_sslkeyfile(request, mgmt_root):
     # Create temporary Key File.
     # Use extensions so tmui doesn't break in managing them.
-    ntf_key = NamedTemporaryFile(suffix='.key')
+    ntf_key = NamedTemporaryFile(suffix='.key', delete=False)
     ntf_key_basename = os.path.basename(ntf_key.name)
     ntf_key_sourcepath = 'file:/var/config/rest/downloads/{0}'.format(
         ntf_key_basename)
@@ -222,7 +272,7 @@ def test_CURDL_sslkeyfile(request, mgmt_root):
 def test_CURDL_sslcsrfile(request, mgmt_root):
     # Create temporary CSR File.
     # Use extensions so tmui doesn't break in managing them.
-    ntf_csr = NamedTemporaryFile(suffix='.csr')
+    ntf_csr = NamedTemporaryFile(suffix='.csr', delete=False)
     ntf_csr_basename = os.path.basename(ntf_csr.name)
     ntf_csr_sourcepath = 'file:/var/config/rest/downloads/{0}'.format(
         ntf_csr_basename)
@@ -269,7 +319,7 @@ def test_CURDL_sslcsrfile(request, mgmt_root):
 def test_CURDL_sslcertfile(request, mgmt_root):
     # Create temporary CSR File.
     # Use extensions so tmui doesn't break in managing them.
-    ntf_cert = NamedTemporaryFile(suffix='.crt')
+    ntf_cert = NamedTemporaryFile(suffix='.crt', delete=False)
     ntf_cert_basename = os.path.basename(ntf_cert.name)
     ntf_cert_sourcepath = 'file:/var/config/rest/downloads/{0}'.format(
         ntf_cert_basename)

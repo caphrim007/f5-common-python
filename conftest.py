@@ -15,6 +15,7 @@
 
 from f5.bigip import BigIP
 from f5.bigip import ManagementRoot
+from f5.bigip.resource import UnsupportedOperation
 from f5.utils.testutils.registrytools import register_device
 from icontrol.session import iControlRESTSession
 import logging
@@ -45,6 +46,8 @@ def pytest_addoption(parser):
     parser.addoption("--release", action="store",
                      help="TMOS version, in dotted format, eg. 12.0.0",
                      default='11.6.0')
+    parser.addoption("--vcmp-host", action="store",
+                     help="IP address of VCMP enabled host.")
 
 
 @pytest.fixture
@@ -122,6 +125,11 @@ def opt_port(request):
 
 
 @pytest.fixture(scope='session')
+def opt_vcmp_host(request):
+    return request.config.getoption("--vcmp-host")
+
+
+@pytest.fixture(scope='session')
 def bigip(opt_bigip, opt_username, opt_password, opt_port, scope="module"):
     '''bigip fixture'''
     b = BigIP(opt_bigip, opt_username, opt_password, port=opt_port)
@@ -132,6 +140,14 @@ def bigip(opt_bigip, opt_username, opt_password, opt_port, scope="module"):
 def mgmt_root(opt_bigip, opt_username, opt_password, opt_port, scope="module"):
     '''bigip fixture'''
     m = ManagementRoot(opt_bigip, opt_username, opt_password, port=opt_port)
+    return m
+
+
+@pytest.fixture(scope='module')
+def vcmp_host(opt_vcmp_host, opt_username, opt_password, opt_port):
+    '''vcmp fixture'''
+    m = ManagementRoot(
+        opt_vcmp_host, opt_username, opt_password, port=opt_port)
     return m
 
 
@@ -217,14 +233,17 @@ def setup_device_snapshot(request, mgmt_root):
         after_snapshot = register_device(mgmt_root)
         diff = set(after_snapshot) - set(before_snapshot)
         for item in diff:
-            after_snapshot[item].delete()
+            try:
+                after_snapshot[item].delete()
+            except UnsupportedOperation:
+                pass
     request.addfinalizer(teardown)
     return before_snapshot
 
 
 @pytest.fixture
 def IFILE(mgmt_root):
-    ntf = NamedTemporaryFile()
+    ntf = NamedTemporaryFile(delete=False)
     ntf_basename = os.path.basename(ntf.name)
     ntf.write('this is a test file')
     ntf.seek(0)
@@ -233,3 +252,17 @@ def IFILE(mgmt_root):
     i = mgmt_root.tm.sys.file.ifiles.ifile.create(name=ntf_basename,
                                                   sourcePath=tpath_name)
     return i
+
+
+@pytest.fixture
+def DATAGROUP(mgmt_root):
+    ntf = NamedTemporaryFile(delete=False)
+    ntf_basename = os.path.basename(ntf.name)
+    ntf.write('"name1" := "value1",')
+    ntf.seek(0)
+    mgmt_root.shared.file_transfer.uploads.upload_file(ntf.name)
+    tpath_name = 'file:/var/config/rest/downloads/{0}'.format(ntf_basename)
+    dg = mgmt_root.tm.sys.file.data_groups.data_group.create(
+        name=ntf_basename, type='string', sourcePath=tpath_name)
+
+    return dg

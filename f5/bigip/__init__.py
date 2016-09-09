@@ -18,9 +18,10 @@
 
 
 from icontrol.session import iControlRESTSession
-from urlparse import parse_qs
-from urlparse import urlparse
-
+try:
+    import urlparse
+except ImportError:
+    import urllib.parse as urlparse
 
 from f5.bigip.cm import Cm
 from f5.bigip.resource import PathElement
@@ -80,12 +81,18 @@ class ManagementRoot(PathElement):
         base_uri = self._meta_data['uri'] + 'tm/sys/'
         response = connect.get(base_uri)
         ver = response.json()
-        version = parse_qs(urlparse(ver['selfLink']).query)['ver'][0]
+        version = urlparse.parse_qs(
+            urlparse.urlparse(ver['selfLink']).query)['ver'][0]
         self._meta_data['tmos_version'] = version
 
 
 class BigIP(ManagementRoot):
     """A shim class used to access the default config resources in 'mgmt/tm.'
+
+    PLEASE DO NOT ADD ATTRIBUTES TO THIS CLASS.
+
+    This class is depcrated in favor of MangementRoot above. Do not add any
+    more objects to the allowed_lazy_attributes list here!
 
     This class is solely implemented for backwards compatibility.
     """
