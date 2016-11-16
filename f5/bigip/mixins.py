@@ -31,6 +31,11 @@ from f5.sdk_exception import F5SDKError
 from f5.sdk_exception import UnsupportedMethod
 
 
+class UtilError(F5SDKError):
+    """Raise this if command excecution returns an error."""
+    pass
+
+
 class InvalidCommand(F5SDKError):
     """Raise this if command argument supplied is invalid."""
     pass
@@ -41,6 +46,16 @@ class UnsupportedTmosVersion(F5SDKError):
 
     on a TMOS version where API was not yet implemented/supported.
     """
+    pass
+
+
+class EmptyContent(F5SDKError):
+    """Raise an error if the returned content size is 0"""
+    pass
+
+
+class MissingHttpHeader(F5SDKError):
+    """We raise this when the expected http header in response is missing"""
     pass
 
 
@@ -160,12 +175,12 @@ class LazyAttributeMixin(object):
 class ExclusiveAttributesMixin(object):
     """Overrides ``__setattr__`` to remove exclusive attrs from the object."""
     def __setattr__(self, key, value):
-        '''Remove any of the existing exclusive attrs from the object
+        """Remove any of the existing exclusive attrs from the object
 
         Objects attributes can be exclusive for example disable/enable.  So
         we need to make sure objects only have one of these attributes at
         at time so that the updates won't fail.
-        '''
+        """
         if '_meta_data' in self.__dict__:
             # Sometimes this is called prior to full object construction
             for attr_set in self._meta_data['exclusive_attributes']:
@@ -187,65 +202,155 @@ class CommandExecutionMixin(object):
     """
 
     def create(self, **kwargs):
-        '''Create is not supported for command execution
+        """Create is not supported for command execution
 
         :raises: UnsupportedOperation
-        '''
+        """
         raise UnsupportedMethod(
             "%s does not support the create method" % self.__class__.__name__
         )
 
     def delete(self, **kwargs):
-        '''Delete is not supported for command execution
+        """Delete is not supported for command execution
 
         :raises: UnsupportedOperation
-        '''
+        """
         raise UnsupportedMethod(
             "%s does not support the delete method" % self.__class__.__name__
         )
 
     def load(self, **kwargs):
-        '''Load is not supported for command execution
+        """Load is not supported for command execution
 
                 :raises: UnsupportedOperation
-        '''
+        """
         raise UnsupportedMethod(
             "%s does not support the load method" % self.__class__.__name__
         )
 
-    def exec_cmd(self, command, **kwargs):
-
+    def _is_allowed_command(self, command):
+        """Checking if the given command is allowed on a given endpoint."""
         cmds = self._meta_data['allowed_commands']
-
         if command not in self._meta_data['allowed_commands']:
             error_message = "The command value {0} does not exist" \
                             "Valid commands are {1}".format(command, cmds)
             raise InvalidCommand(error_message)
 
+    def _check_command_result(self):
+        """If command result exists run these checks."""
+        if self.commandResult.startswith('/bin/bash'):
+            raise UtilError('%s' % self.commandResult.split(' ', 1)[1])
+        if self.commandResult.startswith('/bin/mv'):
+            raise UtilError('%s' % self.commandResult.split(' ', 1)[1])
+        if self.commandResult.startswith('/bin/ls'):
+            raise UtilError('%s' % self.commandResult.split(' ', 1)[1])
+        if self.commandResult.startswith('/bin/rm'):
+            raise UtilError('%s' % self.commandResult.split(' ', 1)[1])
+        if 'invalid option' in self.commandResult:
+            raise UtilError('%s' % self.commandResult)
+        if 'Invalid option' in self.commandResult:
+            raise UtilError('%s' % self.commandResult)
+
+    def exec_cmd(self, command, **kwargs):
+        """Wrapper method that can be changed in the inheriting classes."""
+        self._is_allowed_command(command)
+        self._check_command_parameters(**kwargs)
         return self._exec_cmd(command, **kwargs)
 
     def _exec_cmd(self, command, **kwargs):
-        '''Create a new method as command has specific requirements.
+        """Create a new method as command has specific requirements.
 
         There is a handful of the TMSH global commands supported,
         so this method requires them as a parameter.
 
         :raises: InvalidCommand
-        '''
+        """
 
         kwargs['command'] = command
         self._check_exclusive_parameters(**kwargs)
         requests_params = self._handle_requests_params(kwargs)
-        self._check_command_parameters(**kwargs)
         session = self._meta_data['bigip']._meta_data['icr_session']
         response = session.post(
             self._meta_data['uri'], json=kwargs, **requests_params)
-        self._local_update(response.json())
+        new_instance = self._stamp_out_core()
+        new_instance._local_update(response.json())
+        if 'commandResult' in new_instance.__dict__:
+            new_instance._check_command_result()
 
-        return self
+        return new_instance
 
 
 class FileUploadMixin(object):
+    def _upload_file(self, filepathname, **kwargs):
+        with open(filepathname, 'rb') as fileobj:
+            self._upload(fileobj, **kwargs)
+
+    def _upload(self, fileinterface, **kwargs):
+        size = len(fileinterface.read())
+        fileinterface.seek(0)
+        requests_params = self._handle_requests_params(kwargs)
+        session = self._meta_data['icr_session']
+        chunk_size = kwargs.pop('chunk_size', 512 * 1024)
+        start = 0
+        while True:
+            file_slice = fileinterface.read(chunk_size)
+            if not file_slice:
+                break
+
+            current_bytes = len(file_slice)
+            if current_bytes < chunk_size:
+                end = size
+            else:
+                end = start + current_bytes
+            headers = {
+                'Content-Range': '%s-%s/%s' % (start,
+                                               end - 1,
+                                               size),
+                'Content-Type': 'application/octet-stream'}
+            data = {'data': file_slice,
+                    'headers': headers,
+                    'verify': False}
+            logging.debug(data)
+            requests_params.update(data)
+            session.post(self.file_bound_uri,
+                         **requests_params)
+            start += current_bytes
+
+
+class AsmFileMixin(object):
+    """Mixin for manipulating files for ASM file-transfer endpoints.
+
+
+    For ease of code maintenance this is separate from FileUploadMixin
+    on purpose.
+
+    """
+    def _download_file(self, filepathname):
+            self._download(filepathname)
+
+    def _download(self, filepathname):
+        session = self._meta_data['icr_session']
+        with open(filepathname, 'wb') as writefh:
+            headers = {
+                'Content-Type': 'application/json'
+            }
+            req_params = {'headers': headers,
+                          'verify': False}
+            response = session.get(self.file_bound_uri, **req_params)
+            if response.status_code == 200:
+                if 'Content-Length' not in response.headers:
+                    error_message = "The Content-Length header is not present."
+                    raise MissingHttpHeader(error_message)
+
+                length = response.headers['Content-Length']
+
+                if int(length) > 0:
+                    writefh.write(response.content)
+                else:
+                    error = "Invalid Content-Length value returned: %s ," \
+                            "the value should be reater than 0" % length
+                    raise EmptyContent(error)
+
     def _upload_file(self, filepathname, **kwargs):
         with open(filepathname, 'rb') as fileobj:
             self._upload(fileobj, **kwargs)
@@ -296,3 +401,20 @@ class DeviceMixin(object):
         device = [device for device in coll if device.selfDevice == 'true']
         assert len(device) == 1
         return device[0]
+
+
+class CheckExistenceMixin(object):
+    '''In 11.6.0 some items return True on exists whether they exist or not'''
+
+    def _check_existence_by_collection(self, container, item_name):
+        '''Check existnce of item based on get collection call.
+
+        :param collection: container object -- capable of get_collection()
+        :param item_name: str -- name of item to search for in collection
+        '''
+
+        coll = container.get_collection()
+        for item in coll:
+            if item.name == item_name:
+                return True
+        return False

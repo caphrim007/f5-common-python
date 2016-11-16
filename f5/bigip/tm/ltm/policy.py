@@ -27,20 +27,22 @@ REST Kind
     ``tm:ltm:policy:*``
 """
 
+from f5.bigip.mixins import CheckExistenceMixin
 from f5.bigip.resource import Collection
+from f5.bigip.resource import MissingRequiredCreationParameter
 from f5.bigip.resource import Resource
 from f5.sdk_exception import F5SDKError
 
 from distutils.version import LooseVersion
 
 
-class DraftPolicyNotSupportedInTMOSVersion(F5SDKError):
-    '''Raise if legacy mode is set when creating a policy'''
+class OperationNotSupportedOnPublishedPolicy(F5SDKError):
+    '''Raise if update/modify attempted on published policy'''
     pass
 
 
-class OperationNotSupportedOnPublishedPolicy(F5SDKError):
-    '''Raise if update/modify attempted on published policy'''
+class NonExtantPolicyRule(F5SDKError):
+    '''Raise if a rule does not exist on the device.'''
     pass
 
 
@@ -57,6 +59,7 @@ class Policy(Resource):
     """BIG-IP® LTM policy resource."""
     def __init__(self, policy_s):
         super(Policy, self).__init__(policy_s)
+        self._meta_data['allowed_lazy_attributes'] = [Rules_s]
         self._meta_data['required_json_kind'] = 'tm:ltm:policy:policystate'
         self._meta_data['required_creation_parameters'].update(('strategy',))
         temp = {'tm:ltm:policy:rules:rulescollectionstate': Rules_s}
@@ -73,28 +76,23 @@ class Policy(Resource):
         '''
 
         tmos_ver = self._meta_data['bigip']._meta_data['tmos_version']
-        legacy = kwargs.pop('legacy', True)
+        legacy = kwargs.pop('legacy', False)
         publish = kwargs.pop('publish', False)
-        if legacy and publish:
-            msg = "The keyword arguments 'legacy' and 'publish' were given " \
-                "to this method and both are set to True. A legacy ltm " \
-                "policy does not have the 'draft' or 'published' status."
-            raise DraftPolicyNotSupportedInTMOSVersion(msg)
-        elif legacy and not publish:
+        if LooseVersion(tmos_ver) < LooseVersion('12.1.0'):
             return super(Policy, self)._create(**kwargs)
-        elif not legacy and LooseVersion(tmos_ver) < LooseVersion('12.1.0'):
-            msg = "The version of TMOS on the device does not support " \
-                "draft policies. The keyword argument 'legacy' was " \
-                "given to this method and it was set to 'False'. This " \
-                "is not allowed on the current device."
-            raise DraftPolicyNotSupportedInTMOSVersion(msg)
-        elif not legacy and LooseVersion(tmos_ver) >= LooseVersion('12.1.0'):
-            if publish:
-                self = super(Policy, self)._create(**kwargs)
-                self.publish()
-                return self
+        else:
+            if legacy:
+                return super(Policy, self)._create(legacy=True, **kwargs)
             else:
-                return super(Policy, self)._create(**kwargs)
+                if 'subPath' not in kwargs:
+                    msg = "The keyword 'subPath' must be specified when " \
+                        "creating draft policy in TMOS versions >= 12.1.0. " \
+                        "Try and specify subPath as 'Drafts'."
+                    raise MissingRequiredCreationParameter(msg)
+                self = super(Policy, self)._create(**kwargs)
+                if publish:
+                    self.publish()
+                return self
 
     def _modify(self, **patch):
         '''Modify only draft or legacy policies
@@ -166,7 +164,7 @@ class Rules_s(Collection):
         self._meta_data['allowed_lazy_attributes'] = [Rules]
 
 
-class Rules(Resource):
+class Rules(Resource, CheckExistenceMixin):
     """BIG-IP® LTM policy rules sub-collection resource."""
     def __init__(self, rules_s):
         super(Rules, self).__init__(rules_s)
@@ -177,6 +175,22 @@ class Rules(Resource):
                 'tm:ltm:policy:rules:conditions:conditionscollectionstate':
                 Conditions_s}
         self._meta_data['attribute_registry'] = temp
+
+    def _load(self, **kwargs):
+        """Must check if rule actually exists before proceeding with load."""
+
+        if self._check_existence_by_collection(
+                self._meta_data['container'], kwargs['name']):
+            return super(Rules, self)._load(**kwargs)
+        msg = 'The rule named, {}, does not exist on the device.'.format(
+            kwargs['name'])
+        raise NonExtantPolicyRule(msg)
+
+    def exists(self, **kwargs):
+        """Check rule existence on device."""
+
+        return self._check_existence_by_collection(
+            self._meta_data['container'], kwargs['name'])
 
 
 class Actions_s(Collection):

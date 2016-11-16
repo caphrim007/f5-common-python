@@ -13,13 +13,14 @@
 #   limitations under the License.
 #
 
+from distutils.version import LooseVersion
+import pytest
+
 
 def setup_syslog_test(request, mgmt_root):
     def teardown():
         d.authPrivFrom = "notice"
         d.authPrivTo = "emerg"
-        d.clusteredHostSlot = "enabled"
-        d.clusteredMessageSlot = "disabled"
         d.consoleLog = "enabled"
         d.cronFrom = "warning"
         d.cronTo = "emerg"
@@ -37,22 +38,29 @@ def setup_syslog_test(request, mgmt_root):
         d.userLogFrom = "notice"
         d.userLogTo = "emerg"
         d.remoteServers = []
-
         d.update()
     request.addfinalizer(teardown)
     d = mgmt_root.tm.sys.syslog.load()
     return d
 
 
-class TestSyslog(object):
+def setup_syslog_test_clustered_host(request, mgmt_root):
+    def teardown():
+        d.clusteredHostSlot = "enabled"
+        d.clusteredMessageSlot = "disabled"
+        d.update()
+    request.addfinalizer(teardown)
+    d = mgmt_root.tm.sys.syslog.load()
+    return d
+
+
+class TestSyslogCommon(object):
     def test_load(self, request, mgmt_root):
         s1 = setup_syslog_test(request, mgmt_root)
         s2 = setup_syslog_test(request, mgmt_root)
 
         assert s1.authPrivFrom == s2.authPrivFrom
         assert s1.authPrivTo == s2.authPrivTo
-        assert s1.clusteredHostSlot == s2.clusteredHostSlot
-        assert s1.clusteredMessageSlot == s2.clusteredMessageSlot
         assert s1.consoleLog == s2.consoleLog
         assert s1.cronFrom == s2.cronFrom
         assert s1.cronTo == s2.cronTo
@@ -69,7 +77,6 @@ class TestSyslog(object):
         assert s1.messagesTo == s2.messagesTo
         assert s1.userLogFrom == s2.userLogFrom
         assert s1.userLogTo == s2.userLogTo
-
 
     def test_update_auth_priv_from(self, request, mgmt_root):
         s1 = setup_syslog_test(request, mgmt_root)
@@ -96,32 +103,6 @@ class TestSyslog(object):
         # Refresh
         s2.refresh()
         assert "notice" == s2.authPrivTo
-
-    def test_update_clustered_host_slot(self, request, mgmt_root):
-        s1 = setup_syslog_test(request, mgmt_root)
-        s2 = setup_syslog_test(request, mgmt_root)
-
-        s1.clusteredHostSlot = "disabled"
-        s1.update()
-        assert "disabled" == s1.clusteredHostSlot
-        assert "disabled" != s2.clusteredHostSlot
-
-        # Refresh
-        s2.refresh()
-        assert "disabled" == s2.clusteredHostSlot
-
-    def test_update_clustered_message_slot(self, request, mgmt_root):
-        s1 = setup_syslog_test(request, mgmt_root)
-        s2 = setup_syslog_test(request, mgmt_root)
-
-        s1.clusteredMessageSlot = "enabled"
-        s1.update()
-        assert "enabled" == s1.clusteredMessageSlot
-        assert "enabled" != s2.clusteredMessageSlot
-
-        # Refresh
-        s2.refresh()
-        assert "enabled" == s2.clusteredMessageSlot
 
     def test_update_console_log(self, request, mgmt_root):
         s1 = setup_syslog_test(request, mgmt_root)
@@ -174,7 +155,6 @@ class TestSyslog(object):
         # Refresh
         s2.refresh()
         assert "emerg" == s2.daemonFrom
-
 
     def test_update_daemon_to(self, request, mgmt_root):
         s1 = setup_syslog_test(request, mgmt_root)
@@ -332,24 +312,129 @@ class TestSyslog(object):
         s2.refresh()
         assert "notice" == s2.userLogTo
 
+
+@pytest.mark.skipif(
+    LooseVersion(
+        pytest.config.getoption('--release')
+    ) < LooseVersion('12.0.0'),
+    reason='Clustered slots are only supported in 12.0.0 or greater.'
+)
+class TestSyslogClusteredHostOptions(object):
+    def test_load(self, request, mgmt_root):
+        s1 = setup_syslog_test_clustered_host(request, mgmt_root)
+        s2 = setup_syslog_test_clustered_host(request, mgmt_root)
+
+        assert s1.clusteredHostSlot == s2.clusteredHostSlot
+        assert s1.clusteredMessageSlot == s2.clusteredMessageSlot
+
+    def test_update_clustered_host_slot(self, request, mgmt_root):
+        s1 = setup_syslog_test_clustered_host(request, mgmt_root)
+        s2 = setup_syslog_test_clustered_host(request, mgmt_root)
+
+        s1.clusteredHostSlot = "disabled"
+        s1.update()
+        assert "disabled" == s1.clusteredHostSlot
+        assert "disabled" != s2.clusteredHostSlot
+
+        # Refresh
+        s2.refresh()
+        assert "disabled" == s2.clusteredHostSlot
+
+    def test_update_clustered_message_slot(self, request, mgmt_root):
+        s1 = setup_syslog_test_clustered_host(request, mgmt_root)
+        s2 = setup_syslog_test_clustered_host(request, mgmt_root)
+
+        s1.clusteredMessageSlot = "enabled"
+        s1.update()
+        assert "enabled" == s1.clusteredMessageSlot
+        assert "enabled" != s2.clusteredMessageSlot
+
+        # Refresh
+        s2.refresh()
+        assert "enabled" == s2.clusteredMessageSlot
+
+
+@pytest.mark.skipif(
+    LooseVersion(
+        pytest.config.getoption('--release')
+    ) >= LooseVersion('11.6.1'),
+    reason='Remote options changed in version 11.6.1 or greater.'
+)
+class TestSyslogLegacyRemoteServersOptions(object):
     def test_update_remote_servers(self, request, mgmt_root):
         s1 = setup_syslog_test(request, mgmt_root)
         s2 = setup_syslog_test(request, mgmt_root)
 
         remote_servers = dict(
-            name="/Common/remotesyslog1",
+            name="remotesyslog1",
             host="10.10.10.10",
-            localIp="none",
             remotePort=514
         )
 
         s1.remoteServers = [remote_servers]
         s1.update()
         assert hasattr(s1, 'remoteServers')
-        assert [remote_servers] == s1.remoteServers
         assert not hasattr(s2, 'remoteServers')
+
+        s1_remote = s1.remoteServers.pop()
+        assert remote_servers['name'] == s1_remote['name']
+        assert remote_servers['host'] == s1_remote['host']
+        assert remote_servers['remotePort'] == s1_remote['remotePort']
 
         # Refresh
         s2.refresh()
         assert hasattr(s2, 'remoteServers')
-        assert [remote_servers] == s2.remoteServers
+
+        s2_remote = s2.remoteServers.pop()
+        assert remote_servers['name'] == s2_remote['name']
+        assert remote_servers['host'] == s2_remote['host']
+        assert remote_servers['remotePort'] == s2_remote['remotePort']
+
+
+@pytest.mark.skipif(
+    LooseVersion(
+        pytest.config.getoption('--release')
+    ) < LooseVersion('11.6.1'),
+    reason='Remote options changed in version 11.6.1 or greater.'
+)
+class TestSyslogChangedRemoteServersOptions(object):
+    def test_update_remote_servers(self, request, mgmt_root):
+        """Test updating of the remote server list
+
+        Prior to version 11.6.0, the `name` field and the `partition`
+        field were separate values. At the release of 11.6.0, this was
+        changed so that the `name` field contained teh full path to the
+        object, and the `partition` field was dropped entirely from the
+        returned value.
+
+        :param request:
+        :param mgmt_root:
+        :return:
+        """
+        s1 = setup_syslog_test(request, mgmt_root)
+        s2 = setup_syslog_test(request, mgmt_root)
+
+        remote_servers = dict(
+            name="/Common/remotesyslog1",
+            host="10.10.10.10",
+            remotePort=514
+        )
+
+        s1.remoteServers = [remote_servers]
+        s1.update()
+        assert hasattr(s1, 'remoteServers')
+        assert not hasattr(s2, 'remoteServers')
+
+        s1_remote = s1.remoteServers.pop()
+        assert remote_servers['name'] == s1_remote['name']
+        assert remote_servers['host'] == s1_remote['host']
+        assert remote_servers['remotePort'] == s1_remote['remotePort']
+
+        # Refresh
+        s2.refresh()
+        assert hasattr(s2, 'remoteServers')
+
+        s2_remote = s2.remoteServers.pop()
+        assert remote_servers['name'] == s2_remote['name']
+        assert remote_servers['host'] == s2_remote['host']
+        assert remote_servers['remotePort'] == s2_remote['remotePort']

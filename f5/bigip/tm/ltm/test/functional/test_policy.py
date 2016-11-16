@@ -15,15 +15,18 @@
 
 import copy
 from distutils.version import LooseVersion
-from icontrol.session import iControlUnexpectedHTTPError
+import json
+import os
 from pprint import pprint as pp
 import pytest
 
-from f5.bigip.tm.ltm.policy import DraftPolicyNotSupportedInTMOSVersion
+from f5.bigip.resource import MissingRequiredCreationParameter
+from f5.bigip.tm.ltm.policy import NonExtantPolicyRule
 from f5.bigip.tm.ltm.policy import OperationNotSupportedOnPublishedPolicy
 
 pp('')
 TESTDESCRIPTION = "TESTDESCRIPTION"
+CURDIR = os.path.dirname(os.path.realpath(__file__))
 
 
 @pytest.fixture
@@ -46,7 +49,7 @@ def setup_policy_test(request, mgmt_root, partition, name,
         kw.pop('subPath', None)
         if mgmt_root.tm.ltm.policys.policy.exists(
                 name=name, partition=partition, **kw):
-            pol = mgmt_root.tlm.ltm.policys.policy.load(
+            pol = mgmt_root.tm.ltm.policys.policy.load(
                 name=name, partition=partition, **kw)
             pol.delete()
 
@@ -81,6 +84,11 @@ class TestPolicy_legacy(object):
         p2rc.refresh()
         assert p2rc._meta_data['required_json_kind'] == p2rc.kind
         assert p2rc.get_collection() == []
+        policy1.modify(strategy='/Common/first-match')
+        assert policy2.strategy == '/Common/all-match'
+        assert policy1.strategy != policy2.strategy
+        policy2.refresh()
+        assert policy1.strategy == policy2.strategy
 
     def test_rules_actions_refresh_update_load(self,
                                                setup, request, mgmt_root):
@@ -103,15 +111,54 @@ class TestPolicy_legacy(object):
         assert r1conditions.kind == r1conditions._meta_data[
             'required_json_kind']
 
+    def test_rules_nonextant_on_load(self, setup, request, mgmt_root):
+        rulespc = mgmt_root.tm.ltm.policys
+        test_pol1 = rulespc.policy.load(partition='Common',
+                                        name='_sys_CEC_video_policy')
+        rules_s1 = test_pol1.rules_s
+        with pytest.raises(NonExtantPolicyRule) as ex:
+            rules_s1.rules.load(name='bad_rule')
+        assert 'The rule named, bad_rule, does not exist on the device.' in \
+            ex.value.message
+
+    def test_rules_nonextant_on_exists(self, setup, request, mgmt_root):
+        rulespc = mgmt_root.tm.ltm.policys
+        test_pol1 = rulespc.policy.load(partition='Common',
+                                        name='_sys_CEC_video_policy')
+        rules_s1 = test_pol1.rules_s
+        assert rules_s1.rules.exists(name='bad_rule') is False
+
     def test_create_policy_legacy_false(self, setup, request, mgmt_root):
-        with pytest.raises(DraftPolicyNotSupportedInTMOSVersion) as ex:
-            setup_policy_test(request, mgmt_root, 'Common',
-                              'poltest1', legacy=False)
-        msg = "The version of TMOS on the device does not support " \
-            "draft policies. The keyword argument 'legacy' was " \
-            "given to this method and it was set to 'False'. This " \
-            "is not allowed on the current device."
-        assert msg == ex.value.message
+        pol1, pc1 = setup_policy_test(request, mgmt_root, 'Common',
+                                      'poltest1', legacy=False)
+        assert pol1.name == 'poltest1'
+
+    def test_policy_update_race(self, setup, request, mgmt_root):
+        full_pol_dict = json.load(
+            open(os.path.join(CURDIR, 'full_policy.json')))
+        empty_pol_dict = copy.deepcopy(full_pol_dict)
+        empty_pol_dict['rules'] = []
+        pol, pc = setup_policy_test(request, mgmt_root, 'Common', 'racetest')
+        for i in range(30):
+            # Start out with an empty policy (no rules)
+            pol.refresh()
+            assert pol.rules_s.rules.exists(name='test_rule') is False
+            assert list(pol.rules_s.get_collection()) == []
+            # Update policy to have rules, which have conditions and actions
+            pol.update(**full_pol_dict)
+            # Ensure rules, actions, and conditions are present
+            assert pol.rules_s.rules.exists(name='test_rule') is True
+            rule = pol.rules_s.rules.load(name='test_rule')
+            assert rule.actions_s.actions.exists(name='0')
+            assert rule.actions_s.actions.exists(name='1')
+            assert rule.conditions_s.conditions.exists(name='0')
+            assert rule.conditions_s.conditions.exists(name='1')
+            assert rule.conditions_s.conditions.exists(name='2')
+            assert rule.conditions_s.conditions.exists(name='3')
+            assert rule.conditions_s.conditions.exists(name='4')
+            # Wipe the rule with an update
+            pol.update(**empty_pol_dict)
+            assert pol.rules_s.rules.exists(name='test_rule') is False
 
 
 @pytest.mark.skipif(
@@ -125,7 +172,7 @@ class TestPolicy(object):
                                                       mgmt_root):
         policy1, pc1 = setup_policy_test(request, mgmt_root, 'Common',
                                          'poltest1', subPath='Drafts',
-                                         legacy=True)
+                                         legacy=False)
         assert policy1.name == 'poltest1'
         policy1.strategy = '/Common/all-match'
         policy1.update()
@@ -140,22 +187,27 @@ class TestPolicy(object):
         p2rc.refresh()
         assert p2rc._meta_data['required_json_kind'] == p2rc.kind
         assert p2rc.get_collection() == []
+        policy1.modify(strategy='/Common/first-match')
+        assert policy2.strategy == '/Common/all-match'
+        assert policy1.strategy != policy2.strategy
+        policy2.refresh()
+        assert policy1.strategy == policy2.strategy
 
     def test_policy_create_no_subpath(self, setup, mgmt_root, request):
-        with pytest.raises(iControlUnexpectedHTTPError) as ex:
+        with pytest.raises(MissingRequiredCreationParameter) as ex:
             pol, pc1 = setup_policy_test(request, mgmt_root, 'Common',
                                          'poltest1', legacy=False)
-        assert 'Cannot create/modify published policy' in ex.value.message
+        msg = "The keyword 'subPath' must be specified when creating " \
+            "draft policy in TMOS versions >= 12.1.0. Try and specify " \
+            "subPath as 'Drafts'."
+        assert msg == ex.value.message
 
     def test_policy_create_legacy_and_publish(
             self, setup, mgmt_root, request):
-        with pytest.raises(DraftPolicyNotSupportedInTMOSVersion) as ex:
-            setup_policy_test(request, mgmt_root, 'Common',
-                              'poltest1', legacy=True, publish=True)
-        msg = "The keyword arguments 'legacy' and 'publish' were given " \
-            "to this method and both are set to True. A legacy ltm " \
-            "policy does not have the 'draft' or 'published' status."
-        assert msg == ex.value.message
+        pol1, pc1 = setup_policy_test(request, mgmt_root, 'Common',
+                                      'poltest1', legacy=True, publish=True)
+        assert 'Drafts' not in pol1._meta_data['uri']
+        assert pol1.status == 'legacy'
 
     def test_policy_create_draft(self, setup, mgmt_root, request):
         pol1, pc1 = setup_policy_test(request, mgmt_root, 'Common',
@@ -219,7 +271,7 @@ class TestPolicy(object):
         pol1.delete()
 
     def test_policy_publish_draft_modify_exception(
-            self, setup, mgmt_root, request):
+            self, mgmt_root, request):
         pol1, pc1 = setup_policy_test(request, mgmt_root, 'Common',
                                       'poltest1', subPath='Drafts',
                                       legacy=False)
@@ -231,3 +283,43 @@ class TestPolicy(object):
         assert 'Modify operation not allowed on a published policy.' == \
             ex.value.message
         pol1.delete()
+
+    def test_policy_update_race(self, setup, request, mgmt_root):
+        full_pol_dict = json.load(
+            open(os.path.join(CURDIR, 'full_policy.json')))
+        empty_pol_dict = copy.deepcopy(full_pol_dict)
+        empty_pol_dict['rules'] = []
+        pol, pc = setup_policy_test(request, mgmt_root, 'Common', 'racetest',
+                                    subPath='Drafts')
+        for i in range(30):
+            # Start out with an empty policy (no rules)
+            assert pol.rules_s.rules.exists(name='test_rule') is False
+            assert list(pol.rules_s.get_collection()) == []
+            # Update policy to have rules, which have conditions and actions
+            pol.update(**full_pol_dict)
+            # Ensure rules, actions, and conditions are present
+            assert pol.rules_s.rules.exists(name='test_rule') is True
+            rule = pol.rules_s.rules.load(name='test_rule')
+            assert rule.actions_s.actions.exists(name='0')
+            assert rule.actions_s.actions.exists(name='1')
+            assert rule.conditions_s.conditions.exists(name='0')
+            assert rule.conditions_s.conditions.exists(name='1')
+            assert rule.conditions_s.conditions.exists(name='2')
+            assert rule.conditions_s.conditions.exists(name='3')
+            assert rule.conditions_s.conditions.exists(name='4')
+            # Wipe the rule with an update
+            pol.update(**empty_pol_dict)
+            assert pol.rules_s.rules.exists(name='test_rule') is False
+
+    def test_rules_nonextant_on_load(self, setup, request, mgmt_root):
+        pol, pc = setup_policy_test(request, mgmt_root, 'Common', 'racetest',
+                                    subPath='Drafts')
+        with pytest.raises(NonExtantPolicyRule) as ex:
+            pol.rules_s.rules.load(name='bad_rule')
+        assert 'The rule named, bad_rule, does not exist on the device.' in \
+            ex.value.message
+
+    def test_rules_nonextant_on_exists(self, setup, request, mgmt_root):
+        pol, pc = setup_policy_test(request, mgmt_root, 'Common', 'racetest',
+                                    subPath='Drafts')
+        assert pol.rules_s.rules.exists(name='bad_rule') is False
