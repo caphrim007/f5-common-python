@@ -12,6 +12,10 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 #
+try:
+        from collections import OrderedDict
+except ImportError:
+        from ordereddict import OrderedDict
 import mock
 import pytest
 import requests
@@ -143,15 +147,48 @@ def test_Resource__local_update_IncompatibleKeys():
         "Device provided '__MANGLENAME' which is disallowed,"\
         " it mangles into a Python non-public attribute."
     with pytest.raises(DeviceProvidesIncompatibleKey) as DPIKIO:
-        r._local_update({"for": "foo"})
-    assert str(DPIKIO.value) ==\
-        "Device provided 'for' which is disallowed because"\
-        " it's a Python keyword."
-    with pytest.raises(DeviceProvidesIncompatibleKey) as DPIKIO:
         r._local_update({"%abcd": "foo"})
     assert str(DPIKIO.value) ==\
         "Device provided '%abcd' which is disallowed because"\
         " it's not a valid Python 2.7 identifier."
+
+
+def test_Resource__check_keys_python_keyword():
+    r = Resource(mock.MagicMock())
+    sanitized = r._check_keys({'for': 'test', 'not': 'yep'})
+    assert 'for_' in sanitized
+    assert 'not_' in sanitized
+    assert 'not' not in sanitized
+    assert 'for' not in sanitized
+
+
+def test_Resource__check_for_python_keywords():
+    r = Resource(mock.MagicMock())
+    checked = r._check_for_python_keywords({'for_': 1, 'if_': True})
+    assert 'for' in checked
+    assert 'if' in checked
+    assert 'for_' not in checked
+    assert 'if_' not in checked
+
+
+def test_Resource__check_for_python_keywords_recursive():
+    r = Resource(mock.MagicMock())
+    checked = r._check_for_python_keywords(
+        {'for_': 1, 'test': {'if_': False},
+         't': [{'not_': False}, [{'def_': 1}]]})
+    assert 'for' in checked
+    assert 'if' in checked['test']
+    assert 'not' in checked['t'][0]
+    assert 'def' in checked['t'][1][0]
+
+
+def test_Resource__prepare_request_json():
+    r = Resource(mock.MagicMock(name='test'))
+    kwargs = {'name': 'rule1', 'partition': 'Common',
+              'apiAnonymous': 'test', 'check': 'syntax'}
+    prepped = r._prepare_request_json(kwargs)
+    assert prepped == kwargs
+    assert isinstance(prepped, OrderedDict)
 
 
 def test_Resource__local_update(fake_vs):
@@ -219,23 +256,23 @@ class TestResourceCreate(object):
                 ('vlansEnabled', 'vlansDisabled')
             ]
         fake_vs.create(partition="Common", name="test_create", enabled=False)
-        pos, kwargs = fake_vs._meta_data['bigip']._meta_data['icr_session'].post.\
-            call_args
+        session = fake_vs._meta_data['bigip']._meta_data['icr_session']
+        pos, kwargs = session.post.call_args
         assert kwargs['json']['disabled'] is True
         assert 'enabled' not in kwargs['json']
 
     def test_reduce_boolean_removes_disabled(self, fake_vs):
         fake_vs.create(partition='Common', name='test_create',
                        disabled=False)
-        pos, kwargs = fake_vs._meta_data['bigip']._meta_data['icr_session'].post.\
-            call_args
+        session = fake_vs._meta_data['bigip']._meta_data['icr_session']
+        pos, kwargs = session.post.call_args
         assert kwargs['json']['enabled'] is True
         assert 'disabled' not in kwargs['json']
 
     def test_reduce_boolean_removes_nothing(self, fake_vs):
         fake_vs.create(partition='Common', name='test_create', enabled=True)
-        pos, kwargs = fake_vs._meta_data['bigip']._meta_data['icr_session'].post.\
-            call_args
+        session = fake_vs._meta_data['bigip']._meta_data['icr_session']
+        pos, kwargs = session.post.call_args
         assert kwargs['json']['enabled'] is True
         assert 'disabled' not in kwargs['json']
 
@@ -695,7 +732,7 @@ class TestResource_exists(object):
         assert r.exists(partition='Common', name='test_exists')
 
     def test_not_found(self):
-        r = Resource(mock.MagicMock())
+        r = Resource(mock.MagicMock(name='mock_base'))
         r._meta_data['allowed_lazy_attributes'] = []
         response = requests.Response()
         response.status_code = 404
@@ -705,22 +742,24 @@ class TestResource_exists(object):
             'icr_session': mock_session,
             'hostname': 'TESTDOMAINNAME'
         }
+        r._meta_data['icontrol_version'] = '11.6.0'
         assert not r.exists(partition='Common', name='test_exists')
 
     def test_error(self):
         response = requests.Response()
-        response.status_code = 400
+        response.status_code = 409
         mock_session = mock.MagicMock()
         mock_session.get.side_effect = requests.HTTPError(response=response)
-        r = Resource(mock.MagicMock())
+        r = Resource(mock.MagicMock(name='mock_base'))
         r._meta_data['allowed_lazy_attributes'] = []
         r._meta_data['bigip']._meta_data = {
             'icr_session': mock_session,
             'hostname': 'TESTDOMAINNAME'
         }
+        r._meta_data['icontrol_version'] = '12.1.0'
         with pytest.raises(requests.HTTPError) as err:
             r.exists(partition='Common', name='test_exists')
-            assert err.response.status_code == 400
+        assert err.value.response.status_code == 409
 
 
 def test_OrganizingCollection():
@@ -883,6 +922,7 @@ class TestStats(object):
     def test_load(self):
         r = Virtual(mock.MagicMock())
         r._meta_data['allowed_lazy_attributes'] = []
+        r._meta_data['icontrol_version'] = '12.0.0'
         attrs = {'get.side_effect':
                  [MockResponse(
                      {
@@ -1049,7 +1089,7 @@ class TestAsmResource(object):
 
     def test_exists_error(self):
         response = requests.Response()
-        response.status_code = 400
+        response.status_code = 409
         mock_session = mock.MagicMock()
         mock_session.get.side_effect = requests.HTTPError(response=response)
         r = AsmResource(mock.MagicMock())
@@ -1060,7 +1100,7 @@ class TestAsmResource(object):
         }
         with pytest.raises(requests.HTTPError) as err:
             r.exists(id='T84Lsg_fb11W-QDXeCpdkA')
-            assert err.response.status_code == 400
+        assert err.value.response.status_code == 409
 
     def test_exists_pop_name_id_uri(self):
         r = AsmResource(mock.MagicMock())

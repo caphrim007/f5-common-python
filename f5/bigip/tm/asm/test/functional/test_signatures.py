@@ -125,12 +125,12 @@ class TestSignature(object):
         sig1.delete()
         with pytest.raises(HTTPError) as err:
             mgmt_root.tm.asm.signatures_s.signature.load(id=idhash)
-            assert err.response.status_code == 404
+        assert err.value.response.status_code == 404
 
     def test_load_no_object(self, mgmt_root):
         with pytest.raises(HTTPError) as err:
             mgmt_root.tm.asm.signatures_s.signature.load(id='Lx3553-321')
-            assert err.response.status_code == 404
+        assert err.value.response.status_code == 404
 
     def test_load(self, request, mgmt_root):
         rule = "content:\"ABC\"; depth:10;"
@@ -153,7 +153,7 @@ class TestSignature(object):
 
 
 class TestSignaturesCollection(object):
-    def test_server_collection(self, request, mgmt_root):
+    def test_signature_collection(self, request, mgmt_root):
         # As ASM has predefined items, there is no need to create one
         # However this test might be an issue as the returned json is quite
         # large.

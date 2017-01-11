@@ -7,3 +7,14 @@ bigip_password: "admin"
 modules:
     gtm: false
     ltm: true
+
+# Tests related to iWorkflow tests
+run_iwf_license_tests: false
+run_iwf_cloud_managed_devices_tests: false
+iwf_license_pool: XXXXX-XXXXX-XXXXX-XXXXX-XXXXXXX
+
+# Tests related to BIG-IQ tests
+run_biq_license_tests: false
+biq_license_pool: XXXXX-XXXXX-XXXXX-XXXXX-XXXXXXX
+biq_license_utility: XXXXX-XXXXX-XXXXX-XXXXX-XXXXXXX
+biq_license_volume: XXXXX-XXXXX-XXXXX-XXXXX-XXXXXXX

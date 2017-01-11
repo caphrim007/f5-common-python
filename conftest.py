@@ -13,8 +13,6 @@
 # limitations under the License.
 #
 
-from f5.bigip import BigIP
-from f5.bigip import ManagementRoot
 from f5.bigip.resource import UnsupportedOperation
 from f5.utils.testutils.registrytools import register_device
 from icontrol.session import iControlRESTSession
@@ -32,24 +30,6 @@ logger = logging.getLogger()
 logger.setLevel(logging.WARNING)
 
 requests.packages.urllib3.disable_warnings()
-
-
-def pytest_addoption(parser):
-    parser.addoption("--bigip", action="store",
-                     help="BIG-IP hostname or IP address")
-    parser.addoption("--username", action="store", help="BIG-IP REST username",
-                     default="admin")
-    parser.addoption("--password", action="store", help="BIG-IP REST password",
-                     default="admin")
-    parser.addoption("--port", action="store", help="BIG-IP port",
-                     default=443)
-    parser.addoption("--peer", action="store",
-                     help="Peer BIG-IP hostname or IP address", default='none')
-    parser.addoption("--release", action="store",
-                     help="TMOS version, in dotted format, eg. 12.0.0",
-                     default='11.6.0')
-    parser.addoption("--vcmp-host", action="store",
-                     help="IP address of VCMP enabled host.")
 
 
 @pytest.fixture
@@ -104,70 +84,6 @@ def fakeicontrolsession_v12(monkeypatch):
     fakesessioninstance.get = mock.MagicMock(return_value=Response())
     fakesessionclass.return_value = fakesessioninstance
     monkeypatch.setattr('f5.bigip.iControlRESTSession', fakesessionclass)
-
-
-@pytest.fixture(scope='session')
-def opt_bigip(request):
-    return request.config.getoption("--bigip")
-
-
-@pytest.fixture(scope='session')
-def opt_username(request):
-    return request.config.getoption("--username")
-
-
-@pytest.fixture(scope='session')
-def opt_password(request):
-    return request.config.getoption("--password")
-
-
-@pytest.fixture(scope='session')
-def opt_port(request):
-    return request.config.getoption("--port")
-
-
-@pytest.fixture(scope='session')
-def opt_vcmp_host(request):
-    return request.config.getoption("--vcmp-host")
-
-
-@pytest.fixture(scope='session')
-def bigip(opt_bigip, opt_username, opt_password, opt_port, scope="module"):
-    '''bigip fixture'''
-    b = BigIP(opt_bigip, opt_username, opt_password, port=opt_port)
-    return b
-
-
-@pytest.fixture(scope='module')
-def mgmt_root(opt_bigip, opt_username, opt_password, opt_port, scope="module"):
-    '''bigip fixture'''
-    m = ManagementRoot(opt_bigip, opt_username, opt_password, port=opt_port)
-    return m
-
-
-@pytest.fixture(scope='module')
-def vcmp_host(opt_vcmp_host, opt_username, opt_password, opt_port):
-    '''vcmp fixture'''
-    m = ManagementRoot(
-        opt_vcmp_host, opt_username, opt_password, port=opt_port)
-    return m
-
-
-@pytest.fixture(scope='session')
-def opt_release(request):
-    return request.config.getoption("--release")
-
-
-@pytest.fixture
-def opt_peer(request):
-    return request.config.getoption("--peer")
-
-
-@pytest.fixture
-def peer(opt_peer, opt_username, opt_password, scope="module"):
-    '''peer bigip fixture'''
-    p = BigIP(opt_peer, opt_username, opt_password)
-    return p
 
 
 @pytest.fixture

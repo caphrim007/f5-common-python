@@ -30,7 +30,7 @@ setup(
     author_email='f5_common_python@f5.com',
     url='https://github.com/F5Networks/f5-common-python',
     keywords=['F5', 'sdk', 'api', 'icontrol', 'bigip', 'api', 'ltm'],
-    install_requires=['f5-icontrol-rest == 1.1.0', 'six'],
+    install_requires=['f5-icontrol-rest == 1.2.0', 'ordereddict', 'six'],
     packages=find_packages(
         exclude=["*.test", "*.test.*", "test.*", "test_*", "test", "test*"]
     ),
@@ -40,5 +40,6 @@ setup(
         'Operating System :: OS Independent',
         'Programming Language :: Python',
         'Intended Audience :: System Administrators',
-    ]
+    ],
+    entry_points={'pytest11': ['f5sdk_fixtures = f5sdk_plugins.fixtures']}
 )

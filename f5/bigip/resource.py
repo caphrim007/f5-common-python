@@ -88,6 +88,11 @@ Available Classes:
       and supports a customized 'load' that doesn't require name/partition
       parameters.
 """
+try:
+    from collections import OrderedDict
+except ImportError:
+    from ordereddict import OrderedDict
+import copy
 import keyword
 import re
 import tokenize
@@ -170,6 +175,11 @@ class InvalidForceType(ValueError):
     pass
 
 
+class InvalidName(ValueError):
+    """Raised during creationm when a given resource name is invalid"""
+    pass
+
+
 class URICreationCollision(F5SDKError):
     """self._meta_data['uri'] can only be assigned once. In create or load."""
     pass
@@ -237,18 +247,83 @@ class PathElement(LazyAttributeMixin):
         self._meta_data['object_has_stats'] = True
 
     def _set_meta_data_uri(self):
-        base_uri = self.__class__.__name__.lower()
-        if isinstance(self, Collection):
-            # Handle 'terminal s or _s'
-            if self.__class__.__name__.lower()[-2:] == '_s':
-                endind = 2
-            else:
-                endind = 1
-            base_uri = self.__class__.__name__.lower()[:-endind]
+        base_uri = self._get_base_uri()
         endpoint = base_uri.replace('_', '-')
-        final_uri =\
-            self._meta_data['container']._meta_data['uri'] + endpoint + '/'
+        final_uri = self._build_final_uri(endpoint)
         self._meta_data['uri'] = final_uri
+
+    def _get_base_uri(self):
+        if isinstance(self, Collection):
+            return self._format_collection_name()
+        return self._format_resource_name()
+
+    def _build_final_uri(self, endpoint):
+        return self._meta_data['container']._meta_data['uri'] + endpoint + '/'
+
+    def _format_collection_name(self):
+        """Formats a name from Collection format
+
+        Collections are of two name formats based on their actual URI
+        representation in the REST service.
+
+        1. For cases where the actual URI of a collection is singular, for
+           example,
+
+               /mgmt/tm/ltm/node
+
+           The name of the collection, as exposed to the user, will be made
+           plural. For example,
+
+               mgmt.tm.ltm.nodes
+
+        2. For cases where the actual URI of a collection is plural, for
+           example,
+
+               /mgmt/cm/shared/licensing/pools/
+
+           The name of the collection, as exposed to the user, will remain
+           plural, but will have an `_s` appended to it. For example,
+
+               mgmt.cm.shared.licensing.pools_s
+
+        This method is responsible for undoing the user provided plurality.
+        It ensures that the URI that is being sent to the REST service is
+        correctly plural, or plural plus.
+
+        Returns:
+            A string representation of the user formatted Collection with its
+            plurality identifier removed appropriately.
+        """
+        base_uri = self._format_resource_name()
+        if base_uri[-2:] == '_s':
+            endind = 2
+        else:
+            endind = 1
+        return base_uri[:-endind]
+
+    def _format_resource_name(self):
+        """Formats the name of a Resource
+
+        When the names of Resources are used to create URIs, their names are
+        automatically cast to lowercase to match the actual URI expected by
+        the REST service.
+
+        There are certain URIs, however, that must not be cast in this way.
+
+        For these URIs, this method should be overloaded in the Resource
+        class itself to specify how to handle the Resource name.
+
+        An example of this difference in behavior, refer to the BIG-IQ or
+        iWorkflow APIs such as,
+
+            /mgmt/shared/resolver/device-groups/cm-bigip-allBigIpDevices/
+
+        Returns:
+            A string representation of the Resource as it should be
+            represented when contructing the final URI used to reach that
+            Resource.
+        """
+        return self.__class__.__name__.lower()
 
     def _check_command_parameters(self, **kwargs):
         """Params given to exec_cmd should satisfy required params.
@@ -289,7 +364,7 @@ class PathElement(LazyAttributeMixin):
         """Validate parameters that will be passed to the requests verbs.
 
         This method validates that there is no conflict in the names of the
-        requests_params passed to the function an the other kwargs.  It also
+        requests_params passed to the function and the other kwargs.  It also
         ensures that the required request parameters for the object are
         added to the request params that are passed into the verbs.  An
         example of the latter is ensuring that a certain version of the API
@@ -382,7 +457,6 @@ class ResourceBase(PathElement, ToDictMixin):
         requests_params, patch_uri, session, read_only = \
             self._prepare_put_or_patch(patch)
         self._check_for_boolean_pair_reduction(patch)
-
         read_only_mutations = []
         for attr in read_only:
             if attr in patch:
@@ -392,6 +466,7 @@ class ResourceBase(PathElement, ToDictMixin):
                 % read_only_mutations
             raise AttemptedMutationOfReadOnly(msg)
 
+        patch = self._prepare_request_json(patch)
         response = session.patch(patch_uri, json=patch, **requests_params)
         self._local_update(response.json())
 
@@ -419,14 +494,58 @@ class ResourceBase(PathElement, ToDictMixin):
         read_only = self._meta_data.get('read_only_attributes', [])
         return requests_params, update_uri, session, read_only
 
+    def _prepare_request_json(self, kwargs):
+        '''Prepare request args for sending to device as JSON.'''
+
+        # Check for python keywords in dict
+        kwargs = self._check_for_python_keywords(kwargs)
+
+        # Check for the key 'check' in kwargs
+        if 'check' in kwargs:
+            od = OrderedDict()
+            od['check'] = kwargs['check']
+            kwargs.pop('check')
+            od.update(kwargs)
+            return od
+        return kwargs
+
+    def _iter_list_for_dicts(self, check_list):
+        '''Iterate over list to find dicts and check for python keywords.'''
+
+        list_copy = copy.deepcopy(check_list)
+        for index, elem in enumerate(check_list):
+            if isinstance(elem, dict):
+                list_copy[index] = self._check_for_python_keywords(elem)
+            elif isinstance(elem, list):
+                list_copy[index] = self._iter_list_for_dicts(elem)
+            else:
+                list_copy[index] = elem
+        return list_copy
+
+    def _check_for_python_keywords(self, kwargs):
+        '''When Python keywords seen, mutate to remove trailing underscore.'''
+
+        kwargs_copy = copy.deepcopy(kwargs)
+        for key, val in iteritems(kwargs):
+            if isinstance(val, dict):
+                kwargs_copy[key] = self._check_for_python_keywords(val)
+            elif isinstance(val, list):
+                kwargs_copy[key] = self._iter_list_for_dicts(val)
+            else:
+                if key.endswith('_'):
+                    strip_key = key.rstrip('_')
+                    if keyword.iskeyword(strip_key):
+                        kwargs_copy[strip_key] = val
+                        kwargs_copy.pop(key)
+        return kwargs_copy
+
     def _check_keys(self, rdict):
         """Call this from _local_update to validate response keys
 
         disallowed server-response json keys:
         1. The string-literal '_meta_data'
         2. strings that are not valid Python 2.7 identifiers
-        3. strings that are Python keywords
-        4. strings beginning with '__'.
+        3. strings beginning with '__'.
 
         :param rdict: from response.json()
         :raises: DeviceProvidesIncompatibleKey
@@ -442,9 +561,9 @@ class ResourceBase(PathElement, ToDictMixin):
                     " because it's not a valid Python 2.7 identifier." % x
                 raise DeviceProvidesIncompatibleKey(error_message)
             elif keyword.iskeyword(x):
-                error_message = "Device provided %r which is disallowed"\
-                    " because it's a Python keyword." % x
-                raise DeviceProvidesIncompatibleKey(error_message)
+                # If attribute is keyword, append underscore to attribute name
+                rdict[x + '_'] = rdict[x]
+                rdict.pop(x)
             elif x.startswith('__'):
                 error_message = "Device provided %r which is disallowed"\
                     ", it mangles into a Python non-public attribute." % x
@@ -508,6 +627,7 @@ class ResourceBase(PathElement, ToDictMixin):
             data_dict.pop(attr, '')
 
         data_dict.update(kwargs)
+        data_dict = self._prepare_request_json(data_dict)
 
         # This is necessary as when we receive exception the returned object
         # has its _meta_data stripped.
@@ -613,13 +733,13 @@ class ResourceBase(PathElement, ToDictMixin):
         return new_instance
 
     def _reduce_boolean_pair(self, config_dict, key1, key2):
-        '''Ensure only one key with a boolean value is present in dict.
+        """Ensure only one key with a boolean value is present in dict.
 
         :param config_dict: dict -- dictionary of config or kwargs
         :param key1: string -- first key name
         :param key2: string -- second key name
         :raises: BooleansToReduceHaveSameValue
-        '''
+        """
 
         if key1 in config_dict and key2 in config_dict \
                 and config_dict[key1] == config_dict[key2]:
@@ -834,6 +954,7 @@ class Resource(ResourceBase):
         self._check_exclusive_parameters(**kwargs)
         requests_params = self._handle_requests_params(kwargs)
         self._check_create_parameters(**kwargs)
+        kwargs = self._check_for_python_keywords(kwargs)
 
         # Reduce boolean pairs as specified by the meta_data entry below
         for key1, key2 in self._meta_data['reduction_forcing_pairs']:
@@ -842,6 +963,8 @@ class Resource(ResourceBase):
         # Make convenience variable with short names for this method.
         _create_uri = self._meta_data['container']._meta_data['uri']
         session = self._meta_data['bigip']._meta_data['icr_session']
+
+        kwargs = self._prepare_request_json(kwargs)
 
         # Invoke the REST operation on the device.
         response = session.post(_create_uri, json=kwargs, **requests_params)
@@ -888,6 +1011,7 @@ class Resource(ResourceBase):
         rset = self._meta_data['required_load_parameters']
         check = _missing_required_parameters(rset, **kwargs)
         if check:
+            check.sort()
             error_message = 'Missing required params: %s' % check
             raise MissingRequiredReadParameter(error_message)
 
@@ -906,6 +1030,7 @@ class Resource(ResourceBase):
         kwargs.update(requests_params)
         for key1, key2 in self._meta_data['reduction_forcing_pairs']:
             kwargs = self._reduce_boolean_pair(kwargs, key1, key2)
+        kwargs = self._check_for_python_keywords(kwargs)
         response = refresh_session.get(base_uri, **kwargs)
         # Make new instance of self
         return self._produce_instance(response)
@@ -987,6 +1112,7 @@ class Resource(ResourceBase):
         session = self._meta_data['bigip']._meta_data['icr_session']
         base_uri = self._meta_data['container']._meta_data['uri']
         kwargs.update(requests_params)
+
         try:
             session.get(base_uri, **kwargs)
         except HTTPError as err:
@@ -1008,19 +1134,19 @@ class UnnamedResource(ResourceBase):
     """
 
     def create(self, **kwargs):
-        '''Create is not supported for unnamed resources
+        """Create is not supported for unnamed resources
 
         :raises: UnsupportedOperation
-        '''
+        """
         raise UnsupportedMethod(
             "%s does not support the create method" % self.__class__.__name__
         )
 
     def delete(self, **kwargs):
-        '''Delete is not supported for unnamed resources
+        """Delete is not supported for unnamed resources
 
         :raises: UnsupportedOperation
-        '''
+        """
         raise UnsupportedMethod(
             "%s does not support the delete method" % self.__class__.__name__
         )
@@ -1032,13 +1158,13 @@ class UnnamedResource(ResourceBase):
 
 
 class Stats(UnnamedResource):
-    '''For stats resources.'''
+    """For stats resources."""
 
     def modify(self, **kwargs):
-        '''Modify is not supported for unnamed resources
+        """Modify is not supported for unnamed resources
 
         :raises: UnsupportedOperation
-        '''
+        """
         raise UnsupportedMethod(
             "%s does not support the modify method" % self.__class__.__name__
         )
@@ -1054,10 +1180,7 @@ class AsmResource(Resource):
     ASM resources are unique in BIG-IP® in the sense that their direct URI
     endpoints are hash based IDs of the resources.
 
-    The IDs are generated by BIG-IP® when the objects are created. Some of
-    the resources do not support create() method in the strict sense,
-    as they require an HTTP POST with an empty json{} to prompt BIGIP to
-    create them, therefore a new method fetch() was created.
+    The IDs are generated by BIG-IP® when the objects are created.
 
     Moreover, the ASM resources do not have 'generation' property,
     therefore some of the other methods needed to be adjusted to accommodate
@@ -1067,8 +1190,7 @@ class AsmResource(Resource):
     def __init__(self, container):
         """Call to create a client side object to represent a service URI.
 
-        Call _create _load or _fetch for a Resource resource to have a
-        self._meta_data['uri']!
+        Call _create or _load for a Resource to have a self._meta_data['uri']!
         """
         super(AsmResource, self).__init__(container)
         # Asm endpoints require object 'id' which is a hash created by BIGIP
@@ -1076,31 +1198,6 @@ class AsmResource(Resource):
         self._meta_data['required_load_parameters'] = set(('id',))
         # No ASM endpoint supports Stats
         self._meta_data['object_has_stats'] = False
-
-    def _fetch(self):
-        """wrapped by `fetch` override that in subclasses to customize"""
-        if 'uri' in self._meta_data:
-            error = "There was an attempt to assign a new uri to this "\
-                    "resource, the _meta_data['uri'] is %s and it should"\
-                    " not be changed." % (self._meta_data['uri'])
-            raise URICreationCollision(error)
-        # Make convenience variable with short names for this method.
-        _create_uri = self._meta_data['container']._meta_data['uri']
-        session = self._meta_data['bigip']._meta_data['icr_session']
-        # Invoke the REST operation on the device.
-        response = session.post(_create_uri, json={})
-        # Make new instance of self
-        return self._produce_instance(response)
-
-    def fetch(self):
-        """Fetch the ASM resource on the BIG-IP®.
-
-        This is a heavily modified version of create, that does not allow
-        any arguments when executing. It uses an emtpy json{} HTTP POST to
-        prompt the BIG-IP® to create the object, mainly used by 'Tasks'
-        endpoint.
-        """
-        return self._fetch()
 
     def _load(self, **kwargs):
         """wrapped with load, override that in a subclass to customize"""
@@ -1218,4 +1315,66 @@ class AsmResource(Resource):
         """
         raise UnsupportedOperation(
             "%s does not support the update method" % self.__class__.__name__
+        )
+
+
+class AsmTaskResource(AsmResource):
+    """ASM Task Resource class represents an ASM Tasks endpoint on the
+
+    device.
+
+    Tasks resources do not support create() method in the strict sense,
+    as they require an HTTP POST with an empty json{} to prompt BIGIP to
+    create them, therefore a new method fetch() was created.
+
+    """
+
+    def __init__(self, container):
+        """Call to create a client side object to represent a service URI.
+
+        Call  _fetch for a Resource to have a self._meta_data['uri']!
+        """
+        super(AsmTaskResource, self).__init__(container)
+
+    def _fetch(self):
+        """wrapped by `fetch` override that in subclasses to customize"""
+        if 'uri' in self._meta_data:
+            error = "There was an attempt to assign a new uri to this "\
+                    "resource, the _meta_data['uri'] is %s and it should"\
+                    " not be changed." % (self._meta_data['uri'])
+            raise URICreationCollision(error)
+        # Make convenience variable with short names for this method.
+        _create_uri = self._meta_data['container']._meta_data['uri']
+        session = self._meta_data['bigip']._meta_data['icr_session']
+        # Invoke the REST operation on the device.
+        response = session.post(_create_uri, json={})
+        # Make new instance of self
+        return self._produce_instance(response)
+
+    def fetch(self):
+        """Fetch the ASM resource on the BIG-IP®.
+
+        This is a heavily modified version of create, that does not allow
+        any arguments when executing. It uses an emtpy json{} HTTP POST to
+        prompt the BIG-IP® to create the object, mainly used by 'Tasks'
+        endpoint.
+        """
+        return self._fetch()
+
+    def create(self, **kwargs):
+        """Create is not supported for Task ASM resources
+
+                :raises: UnsupportedOperation
+        """
+        raise UnsupportedOperation(
+            "%s does not support the create method" % self.__class__.__name__
+        )
+
+    def modify(self, **kwargs):
+        """Modify is not supported for Task ASM resources
+
+                :raises: UnsupportedOperation
+        """
+        raise UnsupportedOperation(
+            "%s does not support the modify method" % self.__class__.__name__
         )

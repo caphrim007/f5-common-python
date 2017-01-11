@@ -96,6 +96,22 @@ class TestCreate(object):
         )
         assert 'check syntax' in rule1.apiAnonymous
 
+    def test_create_optional_args_bad_order(self, request, mgmt_root):
+        '''The device requires the check key to be before apiAnonymous.
+
+        Apparently order matters against the device when it comes to
+        the check key value and the apiAnonymous key value in the JSON blob.
+        This test is to ensure we at least try for a different ordering.
+        '''
+
+        setup_create_test(request, mgmt_root, 'rule1', 'Common')
+
+        rule1 = mgmt_root.tm.gtm.rules.rule.create(
+            name='rule1', check='syntax', partition='Common',
+            apiAnonymous=RULE
+        )
+        assert 'check syntax' in rule1.apiAnonymous
+
     def test_create_duplicate(self, request, mgmt_root):
         setup_create_test(request, mgmt_root, 'rule1', 'Common')
         rule1 = mgmt_root.tm.gtm.rules.rule
@@ -107,7 +123,7 @@ class TestCreate(object):
             rule2.create(name='rule1', partition='Common',
                          apiAnonymous=RULE,
                          check='syntax')
-            assert err.response.status_code == 400
+        assert err.value.response.status_code == 409
 
 
 class TestRefresh(object):
@@ -133,7 +149,7 @@ class TestLoad(object):
         with pytest.raises(HTTPError) as err:
             mgmt_root.tm.gtm.rules.rule.load(
                 name='rule1', partition='Common')
-            assert err.response.status_code == 404
+        assert err.value.response.status_code == 404
 
     def test_load(self, request, mgmt_root):
         setup_basic_test(request, mgmt_root, 'rule1', 'Common')
@@ -166,7 +182,7 @@ class TestDelete(object):
         with pytest.raises(HTTPError) as err:
             mgmt_root.tm.gtm.rules.rule.load(
                 name='rule1', partition='Common')
-            assert err.response.status_code == 404
+        assert err.value.response.status_code == 404
 
 
 class TestRuleCollection(object):

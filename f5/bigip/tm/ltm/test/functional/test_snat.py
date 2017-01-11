@@ -91,17 +91,51 @@ class TestSNAT(object):
 
     def test_add_one_origin(self, request, mgmt_root):
         snat1, sc1 = setup_basic_test(request, mgmt_root, 'snat1', 'Common')
-        assert snat1.origins == [{u'name': u'1.1.1.1/32'}]
-        origin2 = {u'name': u'2.2.2.2/32'}
+        assert snat1.origins == [{'name': '1.1.1.1/32'}]
+        origin2 = {'name': '2.2.2.2/32'}
         snat1.origins.append(origin2)
         snat1.update()
-        assert snat1.origins == [{u'name': u'1.1.1.1/32'},
-                                 {u'name': u'2.2.2.2/32'}]
-        snat1.origins[0]['name'] = u'3.3.3.3/32'
+        assert snat1.origins == [{'name': '1.1.1.1/32'},
+                                 {'name': '2.2.2.2/32'}]
+        snat1.origins[0]['name'] = '3.3.3.3/32'
         snat1.update()
-        assert snat1.origins == [{u'name': u'2.2.2.2/32'},
-                                 {u'name': u'3.3.3.3/32'}]
+        assert snat1.origins == [{'name': '2.2.2.2/32'},
+                                 {'name': '3.3.3.3/32'}]
         snat1.origins = []
         with pytest.raises(iControlUnexpectedHTTPError) as err:
             snat1.update()
             assert EXPECTED_ORIGINS_DELETION_MESSAGE in err.response.text
+
+
+class TestIssue863(object):
+    """Test Github issue 863
+
+    @see: https://github.com/F5Networks/f5-common-python/issues/863
+    """
+    def test_issue_resolution(self, request, mgmt_root):
+        name = 'issue863'
+        partition = 'Common'
+
+        def teardown():
+            delete_snat(mgmt_root, name, partition)
+        request.addfinalizer(teardown)
+
+        mgmt_root.tm.ltm.snats.snat.create(
+            name=name,
+            partition=partition,
+            description='this will not fail',
+            origins=('2.2.2.2', '3.3.3.3'),
+            translation='1.1.1.1'
+        )
+
+    def test_multiple_required_one_args(self, request, mgmt_root):
+        with pytest.raises(RequireOneOf) as err:
+            mgmt_root.tm.ltm.snats.snat.create(
+                name='test1',
+                partition='Common',
+                description='this will not fail',
+                origins=('2.2.2.2', '3.3.3.3'),
+                translation='1.1.1.1',
+                automap=True
+            )
+        assert "Creation requires one of" in str(err)
